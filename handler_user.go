@@ -77,7 +77,7 @@ func handlerReset(s *state, cmd command) error {
 	return nil
 }
 
-func handlerUsers(s *state, cmd command) error {
+func handlerListUsers(s *state, cmd command) error {
 	users, err := s.db.GetUsers(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get users: %w", err)
@@ -93,14 +93,24 @@ func handlerUsers(s *state, cmd command) error {
 }
 
 func handlerAgg(s *state, cmd command) error {
-	// Placeholder for future implementation
-	ctx := context.Background()
-	feed, err := fetchFeed(ctx, "https://www.wagslane.dev/index.xml")
-	if err != nil {
-		return fmt.Errorf("failed to fetch feed: %w", err)
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("usage: %s <duration>", cmd.Name)
 	}
-	fmt.Printf("Feed Title: %s\n", feed)
+
+	durationStr := cmd.Args[0]
+
+	timeBetweenRequests, err := time.ParseDuration(durationStr)
+	if err != nil {
+		return fmt.Errorf("invalid duration format: %w", err)
+	}
+
+	ticker := time.NewTicker(timeBetweenRequests)
+	fmt.Printf("Collecting feeds every %v \n", timeBetweenRequests)
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
 	return nil
+
 }
 
 func handlerAddFeed(s *state, cmd command, user database.User) error {
@@ -127,9 +137,9 @@ func handlerAddFeed(s *state, cmd command, user database.User) error {
 
 	fmt.Printf("Feed %s created successfully with ID %s.\n", feed.Name, feed.ID)
 
-	follow, err := s.db.CreateFeedFollows(
+	follow, err := s.db.CreateFeedFollow(
 		context.Background(),
-		database.CreateFeedFollowsParams{
+		database.CreateFeedFollowParams{
 			ID:        uuid.New(),
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
@@ -170,9 +180,9 @@ func handlerFollow(s *state, cmd command, user database.User) error {
 		return fmt.Errorf("couldn't find feed by URL: %w", err)
 	}
 
-	follow, err := s.db.CreateFeedFollows(
+	follow, err := s.db.CreateFeedFollow(
 		context.Background(),
-		database.CreateFeedFollowsParams{
+		database.CreateFeedFollowParams{
 			ID:        uuid.New(),
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
@@ -205,18 +215,44 @@ func handlerUnfollow(s *state, cmd command, user database.User) error {
 	if len(cmd.Args) != 1 {
 		return fmt.Errorf("usage: %s <url>", cmd.Name)
 	}
+
 	feedURL := cmd.Args[0]
+
 	feed, err := s.db.GetFeedByURL(context.Background(), feedURL)
 	if err != nil {
 		return fmt.Errorf("couldn't find feed by URL: %w", err)
 	}
+
+	// Get all follows for this user
+	follows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
+	if err != nil {
+		return fmt.Errorf("couldn't get feed follows: %w", err)
+	}
+
+	// Find the follow row for this feed
+	var followToDelete database.GetFeedFollowsForUserRow
+	found := false
+	for _, f := range follows {
+		if f.FeedID == feed.ID {
+			followToDelete = f
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("user is not following that feed")
+	}
+
+	// Use the row's ID and CreatedAt, as required by DeleteFeedFollow
 	err = s.db.DeleteFeedFollow(context.Background(), database.DeleteFeedFollowParams{
-		UserID: user.ID,
-		FeedID: feed.ID,
+		ID:        followToDelete.ID,
+		CreatedAt: followToDelete.CreatedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("couldn't unfollow feed: %w", err)
 	}
+
+	fmt.Printf("User %s unfollowed feed %s.\n", user.Name, feed.Name)
 	return nil
 }
 
@@ -227,5 +263,28 @@ func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) 
 			return fmt.Errorf("couldn't find current user: %w", err)
 		}
 		return handler(s, cmd, user)
+	}
+}
+
+func scrapeFeeds(s *state) {
+	feed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		fmt.Printf("failed to get next feed to fetch: %v\n", err)
+		return
+	}
+
+	err = s.db.MarkFeedFetched(context.Background(), feed.ID)
+	if err != nil {
+		fmt.Printf("failed to mark feed as fetched: %v\n", err)
+		return
+	}
+
+	feedData, err := fetchFeed(context.Background(), feed.Url)
+	if err != nil {
+		fmt.Printf("failed to fetch feed data: %v\n", err)
+		return
+	}
+	for _, item := range feedData.Channel.Item {
+		fmt.Println(item.Title)
 	}
 }

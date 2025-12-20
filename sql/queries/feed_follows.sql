@@ -1,4 +1,4 @@
--- name: CreateFeedFollows :one
+-- name: CreateFeedFollow :one
 WITH inserted_feed_follow AS (
     INSERT INTO feed_follows (id, created_at, updated_at, user_id, feed_id)
     VALUES (
@@ -7,6 +7,7 @@ WITH inserted_feed_follow AS (
         $3,
         $4,
         $5
+        
     )
     RETURNING *
 )
@@ -24,5 +25,5 @@ WHERE feed_follows.user_id = $1;
 
 -- name: DeleteFeedFollow :exec
 DELETE FROM feed_follows
-WHERE user_id = $1 AND feed_id = $2;
+WHERE id = $1 AND created_at = $2;
 
