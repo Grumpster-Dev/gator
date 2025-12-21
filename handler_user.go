@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/Grumpster-Dev/gator/internal/database"
@@ -285,6 +286,65 @@ func scrapeFeeds(s *state) {
 		return
 	}
 	for _, item := range feedData.Channel.Item {
-		fmt.Println(item.Title)
+		//fmt.Println(item.Title)
+		//s.db.CreatePost(context.Background(),item.Title,item)
+		var publishedAt sql.NullTime
+		parsedTime, err := time.Parse(time.RFC1123Z, item.PubDate)
+		if err == nil {
+			// Parsing succeeded!
+			publishedAt = sql.NullTime{Time: parsedTime, Valid: true}
+		} else {
+			// Parsing failed, no date available
+			publishedAt = sql.NullTime{Valid: false}
+		}
+		postParams := database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+			Title:       item.Title,
+			Url:         item.Link,
+			Description: sql.NullString{String: item.Description, Valid: true},
+			PublishedAt: publishedAt,
+			FeedID:      feed.ID,
+		}
+		_, err = s.db.CreatePost(context.Background(), postParams)
+		if err != nil {
+			if err.Error() == "pq: duplicate key value violates unique constraint \"posts_url_key\"" {
+				continue
+			} else {
+				fmt.Printf("failed to create post: %v\n", err)
+			}
+		} else {
+			fmt.Printf("DEBUG: created post %s for feed %s\n", item.Title, feed.ID)
+		}
 	}
+}
+
+func handlerBrowsePosts(s *state, cmd command, user database.User) error {
+
+	var postLimit int32 = 2
+	if len(cmd.Args) == 1 {
+		n, err := strconv.Atoi(cmd.Args[0])
+		if err != nil {
+			return fmt.Errorf("invalid post limit: %w", err)
+		}
+		postLimit = int32(n)
+	}
+
+	postParams := database.GetPostsByUserParams{
+		UserID: user.ID,
+		Limit:  postLimit,
+	}
+
+	posts, err := s.db.GetPostsByUser(context.Background(), postParams)
+	if err != nil {
+		return fmt.Errorf("failed to get posts: %w", err)
+	}
+
+	fmt.Printf("DEBUG: got %d posts for user %s\n", len(posts), user.Name)
+
+	for _, post := range posts {
+		fmt.Printf("* %s (%s) from feed ID %s\n", post.Title, post.Url, post.FeedID.String())
+	}
+	return nil
 }
